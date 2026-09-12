@@ -5,7 +5,7 @@ import timezone from '@/utils/timezone';
 
 import type { HomePostItem, HupuApiResponse, NewsDataItem } from './types';
 import { isHomePostItem } from './types';
-import { getEntryDetails } from './utils';
+import { extractNextData, getEntryDetails } from './utils';
 
 const categories = {
     nba: {
@@ -25,6 +25,10 @@ const categories = {
         data: 'res',
     },
 } as const;
+
+const isCategory = (key: string): key is keyof typeof categories => Object.hasOwn(categories, key);
+
+type PagePropsData = Partial<Record<(typeof categories)[keyof typeof categories]['data'], Array<HomePostItem | NewsDataItem>>>;
 
 export const route: Route = {
     path: ['/dept/:category?', '/:category?'],
@@ -53,11 +57,10 @@ export const route: Route = {
         },
     ],
     handler: async (ctx): Promise<Data> => {
-        const c = ctx.req.param('category') || '';
-        if (!(c in categories)) {
+        const category = ctx.req.param('category') || '';
+        if (!isCategory(category)) {
             throw new Error('Invalid category. Valid options are: ' + Object.keys(categories).filter(Boolean).join(', '));
         }
-        const category = c as keyof typeof categories;
 
         const rootUrl = 'https://m.hupu.com';
         const currentUrl = `${rootUrl}/${category}`;
@@ -67,32 +70,17 @@ export const route: Route = {
             url: currentUrl,
         });
 
-        const scriptMatch = response.data.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
-        if (!scriptMatch || !scriptMatch[1]) {
-            throw new Error(`Failed to find __NEXT_DATA__ script tag in page: ${currentUrl}`);
-        }
-
-        const fullJsonString = scriptMatch[1];
-        let fullData;
-
-        try {
-            fullData = JSON.parse(fullJsonString);
-        } catch (error) {
-            throw new Error(`Failed to parse full JSON data: ${error instanceof Error ? error.message : String(error)}`);
-        }
-
-        const data: HupuApiResponse = fullData;
+        const data = extractNextData<HupuApiResponse>(response.data, currentUrl);
         const { pageProps } = data.props;
 
         const dataKey = categories[category].data;
-        if (!(dataKey in pageProps)) {
+        if (!Object.hasOwn(pageProps, dataKey)) {
             throw new Error(`Expected '${dataKey}' property not found in pageProps for category: ${category || 'home'}`);
         }
 
-        const rawDataArray: (HomePostItem | NewsDataItem)[] = (() => {
-            const data = (pageProps as any)[dataKey];
-            return Array.isArray(data) ? data : [];
-        })();
+        const pagePropsData: PagePropsData = pageProps;
+        const rawData = pagePropsData[dataKey];
+        const rawDataArray = Array.isArray(rawData) ? rawData : [];
 
         let items: DataItem[] = rawDataArray.map((item) =>
             isHomePostItem(item)
@@ -104,7 +92,7 @@ export const route: Route = {
                   } satisfies DataItem)
                 : ({
                       title: item.title,
-                      pubDate: timezone(parseDate(item.publishTime), +8),
+                      pubDate: timezone(parseDate(item.publishTime), 8),
                       link: item.link.replace(/bbs\.hupu.com/, 'm.hupu.com/bbs'),
                       guid: item.tid,
                   } satisfies DataItem)
@@ -116,6 +104,6 @@ export const route: Route = {
             title: `虎扑 - ${categories[category].title}`,
             link: currentUrl,
             item: items,
-        } as Data;
+        };
     },
 };
